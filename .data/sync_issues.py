@@ -24,9 +24,9 @@ def github_retry_on_rate_limit(func):
             except RateLimitExceededException:
                 print("Rate Limit hit.")
                 rl = github.get_rate_limit()
-                time_to_sleep = int((
-                    rl.core.reset - datetime.datetime.utcnow()
-                ).total_seconds() + 1)
+                time_to_sleep = int(
+                    (rl.core.reset - datetime.datetime.utcnow()).total_seconds() + 1
+                )
                 print("Sleeping for %s seconds" % time_to_sleep)
                 time.sleep(time_to_sleep)
 
@@ -65,7 +65,7 @@ class RepositoryExtended(Repository.Repository):
 #   "parent": 5,  # corresponds to the issue 005 => issue is duplicate of 005
 #   "closed": True,  # True for a closed, unlabeled or low/info issue
 #   "auditor": "rcstanciu",
-#   "severity": "H",  # or None if the issue is unlabeled, closed or low/info
+#   "severity": "H",  # Possible values: "H", "M" or "false"
 #   "title": "Issue title",
 #   "body": "Issue body",
 #   "has_duplicates": True,
@@ -83,16 +83,14 @@ def process_directory(repo, path):
     ]
     for item in repo_items:
         print("Reading file %s" % item.name)
-        if item.name in ["low", "false"]:
-            process_directory(repo, item.path)
-            continue
 
         parent = None
-        closed = any(x in path for x in ["low", "false"])
+        closed = True  # Root issues are closed by default
         files = []
         dir_issues_ids = []
-        severity = None
+        severity = "false"
         if item.type == "dir":
+            closed = any(x in path for x in ["low", "false"])
             # If it's a directory, we have some duplicate issues
             files = list(repo.get_contents(item.path))
             try:
@@ -114,8 +112,6 @@ def process_directory(repo, path):
             body = file.decoded_content.decode("utf-8")
             auditor = body.split("\n")[0]
             title = auditor + " - " + body.split("\n")[4].split("# ")[1]
-            if not severity:
-                severity = body.split("\n")[2][0].upper()
 
             # Stop the script if an issue is found multiple times in the filesystem
             if issue_id in issues.keys():
@@ -229,6 +225,11 @@ def main():
             "name": "Will Fix",
             "color": "BFDADC",
             "description": "The sponsor confirmed this issue will be fixed",
+        },
+        {
+            "name": "Won't Fix",
+            "color": "957B63",
+            "description": "The sponsor confirmed this issue will not be fixed",
         },
         {
             "name": "Escalated",
