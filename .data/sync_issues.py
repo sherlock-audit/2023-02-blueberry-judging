@@ -1,5 +1,6 @@
 import datetime
 import os
+import re
 import time
 from functools import lru_cache, wraps
 
@@ -90,7 +91,7 @@ def process_directory(repo, path):
         dir_issues_ids = []
         severity = "false"
         if item.type == "dir":
-            closed = any(x in path for x in ["low", "false"])
+            closed = any(x in item.name for x in ["low", "false"])
             # If it's a directory, we have some duplicate issues
             files = list(repo.get_contents(item.path))
             try:
@@ -111,7 +112,8 @@ def process_directory(repo, path):
 
             body = file.decoded_content.decode("utf-8")
             auditor = body.split("\n")[0]
-            title = auditor + " - " + body.split("\n")[4].split("# ")[1]
+            issue_title = re.match(r"^(?:[#\s]+)(.*)$", body.split("\n")[4]).group(1)
+            title = f"{auditor} - {issue_title}"
 
             # Stop the script if an issue is found multiple times in the filesystem
             if issue_id in issues.keys():
@@ -130,7 +132,7 @@ def process_directory(repo, path):
             dir_issues_ids.append(issue_id)
 
         # Set the parent field for all duplicates in this directory
-        if len(files) > 1 and parent is None:
+        if len(files) > 1 and parent is None and severity != "false":
             raise Exception(
                 "Issue %s does not have a primary file (-best.md)." % item.path
             )
