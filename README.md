@@ -3,7 +3,7 @@
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/319 
 
 ## Found by 
-0x52, berndartmueller
+berndartmueller, 0x52
 
 ## Summary
 
@@ -77,49 +77,12 @@ Manual Review
 
 Consider changing the denominator in lines 143 and 144 from `1e18` to `1e9` to use the required `18` decimals for the `ICHI` v2 token.
 
-# Issue H-2: Deposit Theft by Crashing LP Spot Prices Through MEV 
-
-Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/220 
-
-## Found by 
-Robert
-
-## Summary
-When depositing into an Ichi vault it allows a user to deposit all in a single token and determines the amount of vault shares they receive based off the price of that token in the second. This does not use twap but rather a combination of spot and twap in which it chooses the lesser of the two. There's protection against heavy manipulation occurring all on one block by checking if the difference between the two is greater than 5%, and failing if it is and if the last price change happened on the current block, but if the last price change was on a previous block it does not revert.
-
-Multi-block MEV allows malicious actors to manipulate price over multiple blocks with no risk at all. They can easily manipulate token price down to near 0 on one block, a user tries to deposit on the next and gets almost $0 worth of vault shares for their tokens, vault shareholders pocket the extra tokens from the user's deposit, and token price is returned. With this, a user depositing into Blueberry could have their entire deposit stolen by a malicious actor. 
-
-This is fairly easy to do now if you see your own block coming up, manipulate price through MEV on the block before that, then include victim transaction and repayment on your own block right after that (not technically needing MMEV). It will be even easier in the future when MMEV is included in Flashbots.
-
-## Vulnerability Detail
-0. Malicious attacker has validator or uses MMEV through flashbots.
-1. Directly before a block they fully control, the validator manipulates token0 price in the LP pool to next to nothing.
-2. On the next block, attacker flash loans a large amount of tokens to purchase Ichi Vault shares.
-3. Attacker includes all pending user deposits into the pool that use that token. Each of these returns to the user almost nothing.
-4. Attacker withdraws shares and included are the tokens that were stolen from users.
-
-## Impact
-User deposits will be stolen.
-
-## Code Snippet
-Price check only reverting on a large change if the block is the same as now:
-https://etherscan.io/token/0x2a8E09552782563f7A076ccec0Ff39473B91Cd8F#code#L2807
-
-Amount of shares relying on price:
-https://etherscan.io/token/0x2a8E09552782563f7A076ccec0Ff39473B91Cd8F#code#L2829
-
-## Tool used
-Manual Review
-
-## Recommendation
-Check spot and twap price the same way IchiVault does but ensure they are within an allowed delta regardless of when price was last updated.
-
-# Issue H-3: Users who deposit extra funds into their Ichi farming positions will lose all their ICHI rewards 
+# Issue H-2: Users who deposit extra funds into their Ichi farming positions will lose all their ICHI rewards 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/158 
 
 ## Found by 
-obront, sinarette, 0x52, tives, carrot, minhtrng, rvierdiiev, berndartmueller
+carrot, rvierdiiev, minhtrng, obront, sinarette, tives, berndartmueller, 0x52
 
 ## Summary
 
@@ -242,85 +205,12 @@ if (collSize > 0) {
 }
 ```
 
-# Issue H-4: LP tokens cannot be valued because ICHI cannot be priced by oracle, causing all new open positions to revert 
-
-Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/152 
-
-## Found by 
-obront
-
-## Summary
-
-In order to value ICHI LP tokens, the oracle uses the Fair LP Pricing technique, which uses the prices of both individual tokens, along with the quantities, to calculate the LP token value. However, this process requires the underlying token prices to be accessible by the oracle. Both Chainlink and Band do not support the ICHI token, so the function will fail, causing all new positions using the IchiVaultSpell to revert.
-
-## Vulnerability Detail
-
-When a new Ichi position is opened, the ICHI LP tokens are posted as collateral. Their value is assessed using the `IchiLpOracle#getPrice()` function:
-
-```solidity
-function getPrice(address token) external view override returns (uint256) {
-    IICHIVault vault = IICHIVault(token);
-    uint256 totalSupply = vault.totalSupply();
-    if (totalSupply == 0) return 0;
-
-    address token0 = vault.token0();
-    address token1 = vault.token1();
-
-    (uint256 r0, uint256 r1) = vault.getTotalAmounts();
-    uint256 px0 = base.getPrice(address(token0));
-    uint256 px1 = base.getPrice(address(token1));
-    uint256 t0Decimal = IERC20Metadata(token0).decimals();
-    uint256 t1Decimal = IERC20Metadata(token1).decimals();
-
-    uint256 totalReserve = (r0 * px0) /
-        10**t0Decimal +
-        (r1 * px1) /
-        10**t1Decimal;
-
-    return (totalReserve * 1e18) / totalSupply;
-}
-```
-This function uses the "Fair LP Pricing" formula, made famous by Alpha Homora. To simplify, this uses an oracle to get the prices of both underlying tokens, and then calculates the LP price based on these values and the reserves.
-
-However, this process requires that we have a functioning oracle for the underlying tokens. However, [Chainlink](https://data.chain.link/) and [Band](https://data.bandprotocol.com/) both do not support the ICHI token (see the links for their comprehensive lists of data feeds). As a result, the call to `base.getPrice(token0)` will fail.
-
-All prices are calculated in the `isLiquidatable()` check at the end of the `execute()` function. As a result, any attempt to open a new ICHI position and post the LP tokens as collateral (which happens in both `openPosition()` and `openPositionFarm()`) will revert.
-
-## Impact
-
-All new positions opened using the `IchiVaultSpell`  will revert when they attempt to look up the LP token price, rendering the protocol useless.
-
-## Code Snippet
-
-https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/oracle/IchiLpOracle.sol#L19-L39
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-There will need to be an alternate form of oracle that can price the ICHI token. The best way to accomplish this is likely to use a TWAP of the price on an AMM.
-
-## Discussion
-
-**Gornutz**
-
-There is additional oracles for assets not supported by chainlink or band but just not in scope of this specific audit.
-
-**hrishibhat**
-
-Based on the context there are no implementations for getting the price of the ICHI token. Considering this a valid issue. 
-
-
-
-
-# Issue H-5: LP tokens are not sent back to withdrawing user 
+# Issue H-3: LP tokens are not sent back to withdrawing user 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/151 
 
 ## Found by 
-Dug, chaduke, obront, sinarette, evan, 0x52, Bauer, koxuan, minhtrng, cergyk, Jeiwan, rvierdiiev, Ch\_301, berndartmueller
+rvierdiiev, minhtrng, Dug, Jeiwan, obront, chaduke, koxuan, sinarette, Ch\_301, cergyk, evan, berndartmueller, 0x52, Bauer
 
 ## Summary
 
@@ -405,12 +295,12 @@ duplicate of 34
 
 
 
-# Issue H-6: Fail to accrue interests on multiple token positions 
+# Issue H-4: Fail to accrue interests on multiple token positions 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/140 
 
 ## Found by 
-Jeiwan, cducrest-brainbot, rvierdiiev
+cducrest-brainbot, rvierdiiev, Jeiwan
 
 ## Summary
 
@@ -456,12 +346,12 @@ Manual Review
 
 Review how token interests are triggered. Probably need to accrue interests on every debt token of a position at the beginning of execute.
 
-# Issue H-7: Users can get around MaxLTV because of lack of strategyId validation 
+# Issue H-5: Users can get around MaxLTV because of lack of strategyId validation 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/129 
 
 ## Found by 
-obront, carrot, cergyk, Jeiwan, Ch\_301
+8olidity, carrot, Jeiwan, obront, Ch\_301, cergyk, rbserver
 
 ## Summary
 
@@ -539,12 +429,12 @@ address unwrappedCollToken = IERC20Wrapper(positionCollToken).getUnderlyingToken
 require(strategies[strategyId].vault == unwrappedCollToken, "wrong strategy");
 ```
 
-# Issue H-8: Liquidator can take all collateral and underlying tokens for a fraction of the correct price 
+# Issue H-6: Liquidator can take all collateral and underlying tokens for a fraction of the correct price 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/127 
 
 ## Found by 
-0x52, berndartmueller, obront
+cducrest-brainbot, rvierdiiev, obront, evan, berndartmueller, 0x52, XKET
 
 ## Summary
 
@@ -614,7 +504,7 @@ Manual Review
 
 Adjust these calculations to use `amountPaid / getDebtValue(positionId)`, which is accurately calculate the proportion of the total debt paid off.
 
-# Issue H-9: Users can be liquidated prematurely because calculation understates value of underlying position 
+# Issue H-7: Users can be liquidated prematurely because calculation understates value of underlying position 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/126 
 
@@ -661,12 +551,12 @@ Manual Review
 
 Value of the underlying assets should be derived from the vault shares and value, rather than being stored directly.
 
-# Issue H-10: Interest component of underlying amount is not withdrawable using the `withdrawLend` function. Such amount is permanently locked in the BlueBerryBank contract 
+# Issue H-8: Interest component of underlying amount is not withdrawable using the `withdrawLend` function. Such amount is permanently locked in the BlueBerryBank contract 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/109 
 
 ## Found by 
-XKET, saian, chaduke, Ruhum, 0Kage, stent, GimelSec, carrot, minhtrng, koxuan, cergyk, Jeiwan, rbserver, berndartmueller
+berndartmueller, carrot, minhtrng, 0Kage, Jeiwan, chaduke, koxuan, Ruhum, cergyk, rbserver, stent, saian, XKET, GimelSec
 
 ## Summary
 Soft vault shares are issued against interest bearing tokens issued by `Compound` protocol in exchange for underlying deposits. However, `withdrawLend` function caps the withdrawable amount to initial underlying deposited by user (`pos.underlyingAmount`). Capping underlying amount to initial underlying deposited would mean that a user can burn all his vault shares in `withdrawLend` function and only receive original underlying deposited.
@@ -767,104 +657,12 @@ function withdrawLend(address token, uint256 shareAmount)
 
 
 
-# Issue H-11: `isLiquidatable` function underprices risk, potentially preventing (or delaying) liquidations of undercollateralized positions 
-
-Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/102 
-
-## Found by 
-0Kage
-
-## Summary
-Blueberry bank contract has a `isLiquidatable` function that checks if a given position is undercollateralized, and needs to be  liquidated. Liquidators will call this function to check if the debt + strategy losses for a given position as a proportion of posted collateral exceed the liquidation threshold.
-
-This function computes the `risk` of a position using its debt value, collateral value and underlying value. Debt value uses the unaccrued total debt that ignores the outstanding interest accrued on `cToken` borrowings. As a result, debt value used for risk calculation is lesser than actual value. This leads to an `underpricing` of risk that can prevent or delay liquidators from initiating a liquidation action leading to under-collateralization & protocol losses.
-
-## Vulnerability Detail
-[`isLiquidatable`](https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L503) function calculates risk of a given position by computing debt value, position value and underlying value in the `getPositionRisk` function.
-
-However, debt value calculated by [`getDebtValue`](https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L466) function does not include the interest accrued on `cTokens` on the outstanding debt.
-
-```solidity
-    function getDebtValue(uint256 positionId)
-        public
-        view
-        override
-        returns (uint256)
-    {
-        uint256 value = 0;
-        Position storage pos = positions[positionId];
-        uint256 bitMap = pos.debtMap;
-        uint256 idx = 0;
-        while (bitMap > 0) {
-            if ((bitMap & 1) != 0) {
-                address token = allBanks[idx];
-                uint256 share = pos.debtShareOf[token];
-                Bank storage bank = banks[token];
-                uint256 debt = (share * bank.totalDebt).divCeil(bank.totalShare); //-audit totalDebt here does not include the accrued component since last update
-                value += oracle.getDebtValue(token, debt);
-            }
-            idx++;
-            bitMap >>= 1;
-        }
-        return value;
-    }
-```
-
-As a result, debt value used for `risk` calculations is always lesser than or equal to actual debt outstanding. A lower risk value can generate a false signal to liquidators that a position is sufficiently collaterized. In reality, such a loan is under collateralized and should have gone for liquidation. (Note that `isLiquidatable` called within `Liquidate` function is correct value, because the function calls `poke` modifier that updates debt value)
-
-
-## Impact
-Incases where significant time has elapsed since last debt update, `accrued` component could be significant in comparison to total debt. While unaccrued debt value might generate a `risk` value below liquidation threshold, including accrued component might exceed that threshold. This edge case is dangerous because it gives a false comfort to liquidators that position is sufficiently collateralized.
-
-POC:
-
-- Say Bank has total debt of 1000 USDC
-- Alice borrows 80 USDC (8%) by posting 100 USDC worth ETH as collateral
-- After 30 days, say total accrued is 50 USDC
-- Current Risk calculation uses Alice debt value as 80 USDC
-- Actual debt value of Alice is 8% \* (1000 + 50) = 84 USDC
-- All other things being equal (position losses + collateral posted), protocol underpriced risk of Alice positions
-
-## Code Snippet
-https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L503
-
-https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L466
-
-## Tool used
-Manual Review
-
-## Recommendation
-
-Recommend replacing line 466 below 
-
-```solidity
-
- uint256 debt = (share * bank.totalDebt).divCeil(bank.totalShare)
-
-```
-with following
-
-```solidity
-
- uint256 debt = (share * ICErc20(bank.cToken).borrowBalanceCurrent(address(this))).divCeil(bank.totalShare)
-
-```
-This uses the latest debt value at the current timestamp for calculating risk of the position.
-
-## Discussion
-
-**Gornutz**
-
-duplicate of 27
-
-
-
-# Issue H-12: BlueBerryBank#withdrawLend will cause underlying token accounting error if soft/hard vault has withdraw fee 
+# Issue H-9: BlueBerryBank#withdrawLend will cause underlying token accounting error if soft/hard vault has withdraw fee 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/33 
 
 ## Found by 
-Ruhum, 0x52, evan, rvierdiiev, csanuragjain, y1cunhui
+y1cunhui, rvierdiiev, csanuragjain, Ruhum, evan, 0x52
 
 ## Summary
 
@@ -933,12 +731,12 @@ Manual Review
 
 `HardVault/SoftVault#withdraw` should also return the fee paid to the vault, so that it can be accounted for.
 
-# Issue H-13: IchiLpOracle is extemely easy to manipulate due to how IchiVault calculates underlying token balances 
+# Issue H-10: IchiLpOracle is extemely easy to manipulate due to how IchiVault calculates underlying token balances 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/20 
 
 ## Found by 
-banditx0x, psy4n0n, obront, 0x52, carrot, cergyk, ctf\_sec
+carrot, obront, ctf\_sec, cergyk, banditx0x, psy4n0n, 0x52
 
 ## Summary
 
@@ -983,102 +781,12 @@ Manual Review
 
 Token balances should be calculated inside the oracle instead of getting them from the `IchiVault`. To determine the liquidity, use a TWAP instead of `slot0`.
 
-# Issue H-14: WIchiFarm will break after second deposit of LP 
-
-Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/15 
-
-## Found by 
-0x52
-
-## Summary
-
-WIchiFarm.sol makes the incorrect assumption that IchiVaultLP doesn't reduce allowance when using the transferFrom if allowance is set to type(uint256).max. Looking at a currently deployed [IchiVault](https://etherscan.io/token/0x683f081dbc729dbd34abac708fa0b390d49f1c39#code#L2281) this assumption is not true. On the second deposit for the LP token, the call will always revert at the safe approve call.
-
-## Vulnerability Detail
-
-[IchiVault](https://etherscan.io/token/0x683f081dbc729dbd34abac708fa0b390d49f1c39#code#L2281)
-
-      function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
-          _transfer(sender, recipient, amount);
-          _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
-          return true;
-      }
-
-The above lines show the trasnferFrom call which reduces the allowance of the spender regardless of whether the spender is approved for type(uint256).max or not. 
-
-        if (
-            IERC20Upgradeable(lpToken).allowance(
-                address(this),
-                address(ichiFarm)
-            ) != type(uint256).max
-        ) {
-            // We only need to do this once per pool, as LP token's allowance won't decrease if it's -1.
-            IERC20Upgradeable(lpToken).safeApprove(
-                address(ichiFarm),
-                type(uint256).max
-            );
-        }
-
-As a result after the first deposit the allowance will be less than type(uint256).max. When there is a second deposit, the reduced allowance will trigger a safeApprove call.
-
-    function safeApprove(
-        IERC20Upgradeable token,
-        address spender,
-        uint256 value
-    ) internal {
-        // safeApprove should only be called when setting an initial allowance,
-        // or when resetting it to zero. To increase and decrease it, use
-        // 'safeIncreaseAllowance' and 'safeDecreaseAllowance'
-        require(
-            (value == 0) || (token.allowance(address(this), spender) == 0),
-            "SafeERC20: approve from non-zero to non-zero allowance"
-        );
-        _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
-    }
-
-safeApprove requires that either the input is zero or the current allowance is zero. Since neither is true the call will revert. The result of this is that WIchiFarm is effectively broken after the first deposit.
-
-## Impact
-
-WIchiFarm is broken and won't be able to process deposits after the first.
-
-## Code Snippet
-
-https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/wrapper/WIchiFarm.sol#L38
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-Only approve is current allowance isn't enough for call. Optionally add zero approval before the approve. Realistically it's impossible to use the entire type(uint256).max, but to cover edge cases you may want to add it.
-
-        if (
-            IERC20Upgradeable(lpToken).allowance(
-                address(this),
-                address(ichiFarm)
-    -       ) != type(uint256).max
-    +       ) < amount
-        ) {
-
-    +       IERC20Upgradeable(lpToken).safeApprove(
-    +           address(ichiFarm),
-    +           0
-            );
-            // We only need to do this once per pool, as LP token's allowance won't decrease if it's -1.
-            IERC20Upgradeable(lpToken).safeApprove(
-                address(ichiFarm),
-                type(uint256).max
-            );
-        }
-
 # Issue M-1: The maximum size of an `ICHI` vault spell position can be arbitrarily surpassed 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/327 
 
 ## Found by 
-rvierdiiev, rbserver, berndartmueller, koxuan
+berndartmueller, koxuan, rvierdiiev, rbserver
 
 ## Summary
 
@@ -1185,7 +893,7 @@ Consider determining the current position size using the `bank.getPositionValue(
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/290 
 
 ## Found by 
-Jeiwan
+Jeiwan, Nyx
 
 ## Summary
 Debt repaying can be temporary disabled by the admin of `BlueBerryBank`, however liquidations are not disabled during this period. As a result, users' positions can accumulate more borrow interest, go above the liquidation threshold, and be liquidated, while users aren't able to repay the debts.
@@ -1205,7 +913,7 @@ Consider disallowing liquidations when repayments are disabled. Alternatively, c
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/254 
 
 ## Found by 
-peanuts, tives, sakshamguruji
+sakshamguruji, tives, peanuts
 
 ## Summary
 
@@ -1275,289 +983,97 @@ duplicate of 15
 
 
 
-# Issue M-4: Use of deprecated `safeApprove()` is discouraged and missing approve to zero could cause certain token transfer to fail 
+# Issue M-4: Deposit Theft by Crashing LP Spot Prices Through MEV 
 
-Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/236 
+Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/220 
 
 ## Found by 
-RaymondFam, Jeiwan, PRAISE, Breeje, y1cunhui
+Robert
 
 ## Summary
-OpenZeppelin's `safeapprove()` has issues similar to the ones found in [IERC20.approve()](https://docs.openzeppelin.com/contracts/4.x/api/token/erc20#IERC20-approve-address-uint256-), and its usage is discouraged.
+When depositing into an Ichi vault it allows a user to deposit all in a single token and determines the amount of vault shares they receive based off the price of that token in the second. This does not use twap but rather a combination of spot and twap in which it chooses the lesser of the two. There's protection against heavy manipulation occurring all on one block by checking if the difference between the two is greater than 5%, and failing if it is and if the last price change happened on the current block, but if the last price change was on a previous block it does not revert.
 
-Whenever possible, use [`safeIncreaseAllowance()`](https://docs.openzeppelin.com/contracts/4.x/api/token/erc20#SafeERC20-safeIncreaseAllowance-contract-IERC20-address-uint256-) and [`safeDecreaseAllowance()`](https://docs.openzeppelin.com/contracts/4.x/api/token/erc20#SafeERC20-safeDecreaseAllowance-contract-IERC20-address-uint256-) instead.
+Multi-block MEV allows malicious actors to manipulate price over multiple blocks with no risk at all. They can easily manipulate token price down to near 0 on one block, a user tries to deposit on the next and gets almost $0 worth of vault shares for their tokens, vault shareholders pocket the extra tokens from the user's deposit, and token price is returned. With this, a user depositing into Blueberry could have their entire deposit stolen by a malicious actor. 
 
-Additionally, some tokens, e.g USDT, do not work when changing the allowance from an existing non-zero allowance value. For instance, Tether (USDT)'s approve() will revert if the current approval has not been set to zero, serving to protect against front-running changes of approvals.
+This is fairly easy to do now if you see your own block coming up, manipulate price through MEV on the block before that, then include victim transaction and repayment on your own block right after that (not technically needing MMEV). It will be even easier in the future when MMEV is included in Flashbots.
 
 ## Vulnerability Detail
-In the protocol, all functions using `safeapprove()` must be first approved by zero on top getting it replaced by `safeDecreaseAllowance()`. These are `ensureApprove()` in BasicSpell.sol, `initialize()` in SoftVault.sol, `mint()` and `burn()` in WichiFarm.sol. 
+0. Malicious attacker has validator or uses MMEV through flashbots.
+1. Directly before a block they fully control, the validator manipulates token0 price in the LP pool to next to nothing.
+2. On the next block, attacker flash loans a large amount of tokens to purchase Ichi Vault shares.
+3. Attacker includes all pending user deposits into the pool that use that token. Each of these returns to the user almost nothing.
+4. Attacker withdraws shares and included are the tokens that were stolen from users.
 
 ## Impact
-Otherwise, these functions are going to revert every time they encounter such kind of tokens that might have a remaining allowance (even in dust amount) associated.
+User deposits will be stolen.
 
 ## Code Snippet
-[File: BasicSpell.sol#L47-L52](https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/spell/BasicSpell.sol#L47-L52)
+Price check only reverting on a large change if the block is the same as now:
+https://etherscan.io/token/0x2a8E09552782563f7A076ccec0Ff39473B91Cd8F#code#L2807
 
-```solidity
-    function ensureApprove(address token, address spender) internal {
-        if (!approved[token][spender]) {
-            IERC20Upgradeable(token).safeApprove(spender, type(uint256).max);
-            approved[token][spender] = true;
-        }
-    }
-```
-[File: SoftVault.sol#L41-L56](https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/vault/SoftVault.sol#L41-L56)
+Amount of shares relying on price:
+https://etherscan.io/token/0x2a8E09552782563f7A076ccec0Ff39473B91Cd8F#code#L2829
 
-```solidity
-    function initialize(
-        IProtocolConfig _config,
-        ICErc20 _cToken,
-        string memory _name,
-        string memory _symbol
-    ) external initializer {
-        __ERC20_init(_name, _symbol);
-        __Ownable_init();
-        if (address(_cToken) == address(0) || address(_config) == address(0))
-            revert ZERO_ADDRESS();
-        IERC20Upgradeable _uToken = IERC20Upgradeable(_cToken.underlying());
-        config = _config;
-        cToken = _cToken;
-        uToken = _uToken;
-        _uToken.safeApprove(address(_cToken), type(uint256).max);
-    }
-```
-[File: WIchiFarm.sol#L82-L135](https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/wrapper/WIchiFarm.sol#L82-L135)
-
-```solidity
-    function mint(uint256 pid, uint256 amount)
-        external
-        nonReentrant
-        returns (uint256)
-    {
-        address lpToken = ichiFarm.lpToken(pid);
-        IERC20Upgradeable(lpToken).safeTransferFrom(
-            msg.sender,
-            address(this),
-            amount
-        );
-        if (
-            IERC20Upgradeable(lpToken).allowance(
-                address(this),
-                address(ichiFarm)
-            ) != type(uint256).max
-        ) {
-            // We only need to do this once per pool, as LP token's allowance won't decrease if it's -1.
-            IERC20Upgradeable(lpToken).safeApprove(
-                address(ichiFarm),
-                type(uint256).max
-            );
-        }
-        ichiFarm.deposit(pid, amount, address(this));
-        (uint256 ichiPerShare, , ) = ichiFarm.poolInfo(pid);
-        uint256 id = encodeId(pid, ichiPerShare);
-        _mint(msg.sender, id, amount, "");
-        return id;
-    }
-
-    function burn(uint256 id, uint256 amount)
-        external
-        nonReentrant
-        returns (uint256)
-    {
-        if (amount == type(uint256).max) {
-            amount = balanceOf(msg.sender, id);
-        }
-        (uint256 pid, uint256 stIchiPerShare) = decodeId(id);
-        _burn(msg.sender, id, amount);
-
-        uint256 ichiRewards = ichiFarm.pendingIchi(pid, address(this));
-        ichiFarm.harvest(pid, address(this));
-        ichiFarm.withdraw(pid, amount, address(this));
-
-        // Convert Legacy ICHI to ICHI v2
-        if (ichiRewards > 0) {
-            ICHIv1.safeApprove(address(ICHI), ichiRewards);
-            ICHI.convertToV2(ichiRewards);
-        }
-```
 ## Tool used
-
 Manual Review
 
 ## Recommendation
-Consider approving 0 first prior to using the recommended `safeIncreaseAllowance()` to set the value of allowances.
+Check spot and twap price the same way IchiVault does but ensure they are within an allowed delta regardless of when price was last updated.
 
-For example, the first instance in the Code Snippet may be refactored as follows:
+## Discussion
 
-```diff
-    function ensureApprove(address token, address spender) internal {
-        if (!approved[token][spender]) {
-+            IERC20Upgradeable(token).safeApprove(spender, 0);
-+            IERC20Upgradeable(token).safeIncreaseAllowance(spender, type(uint256).max);
--            IERC20Upgradeable(token).safeApprove(spender, type(uint256).max);
-            approved[token][spender] = true;
-        }
-    }
-```
+**SergeKireev**
 
-# Issue M-5: potential gains of collateral are not given back to position owner when withdrawLend is called 
+Escalate for 31 USDC
 
-Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/227 
+This strategy is invalid since the validator would expose a big amount of their own funds(*) to being arbitraged away during the block before the one they control (they imbalance the pool during a block which they do not control according to the report). Since generalized MEV searchers are highly efficient the probability of the validator losing their funds in that exact block is higher than not.
 
-## Found by 
-Ch\_301, koxuan
+\(*) They have to use their own funds in the first block because flash loan cannot be used accross blocks obviously
 
-## Summary
-According to the docs, borrow tokens will bring potential gains or losses to position owners depending on the price of the collateral when closing a position. However, a logic in the `withdrawLend` function will only return position owner the original price that they have borrowed. 
-
-## Vulnerability Detail
-
-According to the docs https://docs.blueberry.garden/earn/what-are-liquidations, 
-
-So when would you have to worry about it? Well, since you've deposited crypto tokens, the value of your collateral is volatile and able to change as token prices move. 
-
-However, as we see in `withdrawLend`, if the withdrawn amount is more than the underlyingAmount, the potential gains are not given back to the position owner. 
-
-```solidity
-        if (address(ISoftVault(bank.softVault).uToken()) == token) {
-            ISoftVault(bank.softVault).approve(
-                bank.softVault,
-                type(uint256).max
-            );
-            wAmount = ISoftVault(bank.softVault).withdraw(shareAmount);
-        } else {
-            wAmount = IHardVault(bank.hardVault).withdraw(token, shareAmount);
-        }
+For this attack to work the validator would need to control fully two consecutive blocks, which makes it highely unlikely and thus the risk should be considered very low (comparable to for example continued price manipulation of uniswap pools).
 
 
-        wAmount = wAmount > pos.underlyingAmount
-            ? pos.underlyingAmount
-            : wAmount;
-```
+**sherlock-admin**
+
+ > Escalate for 31 USDC
+> 
+> This strategy is invalid since the validator would expose a big amount of their own funds(*) to being arbitraged away during the block before the one they control (they imbalance the pool during a block which they do not control according to the report). Since generalized MEV searchers are highly efficient the probability of the validator losing their funds in that exact block is higher than not.
+> 
+> \(*) They have to use their own funds in the first block because flash loan cannot be used accross blocks obviously
+> 
+> For this attack to work the validator would need to control fully two consecutive blocks, which makes it highely unlikely and thus the risk should be considered very low (comparable to for example continued price manipulation of uniswap pools).
+> 
+
+You've created a valid escalation for 31 USDC!
+
+To remove the escalation from consideration: Delete your comment.
+To change the amount you've staked on this escalation: Edit your comment **(do not create a new comment)**.
+
+You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
+
+**hrishibhat**
+
+Escalation accepted
+
+While this issue is not invalid, accepting this escalation on the basis of lowering the impact of this issue. 
+After discussing internally, given the complex nature of the attack as well precondition of a controlling multi-block MEV &  the requirement that attacker would have to use large amounts of their own funds to be able to execute this, 
+considering this issue as a Valid Medium
+
+**sherlock-admin**
+
+> Escalation accepted
+> 
+> While this issue is not invalid, accepting this escalation on the basis of lowering the impact of this issue. 
+> After discussing internally, given the complex nature of the attack as well precondition of a controlling multi-block MEV &  the requirement that attacker would have to use large amounts of their own funds to be able to execute this, 
+> considering this issue as a Valid Medium
+
+This issue's escalations have been accepted!
+
+Contestants' payouts and scores will be updated according to the changes made on this issue.
 
 
-## Impact
-Loss of fund to position owner when closing position.
 
-## Code Snippet
-https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L683-L695
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-Recommend returning user their collateral and their potential gains.
-
-# Issue M-6: Safety net on computing total debt after borrowing 
-
-Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/212 
-
-## Found by 
-clems4ever
-
-## Summary
-
-bank.totalDebt is updated when accrual is computed, borrowing is done or a repayment is made. In the case of accrual and repayment the actual value of the debt is coming from the cToken contract ensuring that the value is actual. When borrowing though, the value `amountCall` is added to the debt with no guarantee whether this amount has actually been borrowed.
-
-I suggest that you align the computation of `totalDebt` with the other instances.
-
-## Vulnerability Detail
-
-The value bank.totalDebt is updated with the value from the cToken in both cases below:
-
-```solidity
-function doRepay(address token, uint256 amountCall)
-        internal
-        returns (uint256 repaidAmount)
-    {
-        Bank storage bank = banks[token]; // assume the input is already sanity checked.
-        IERC20Upgradeable(token).approve(bank.cToken, amountCall);
-        if (ICErc20(bank.cToken).repayBorrow(amountCall) != 0)
-            revert REPAY_FAILED(amountCall);
-        uint256 newDebt = ICErc20(bank.cToken).borrowBalanceStored( <==========================================
-            address(this)
-        );
-        repaidAmount = bank.totalDebt - newDebt;
-        bank.totalDebt = newDebt;
-    }
-```
-
-```solidity
-function accrue(address token) public override {
-        Bank storage bank = banks[token];
-        if (!bank.isListed) revert BANK_NOT_LISTED(token);
-        bank.totalDebt = ICErc20(bank.cToken).borrowBalanceCurrent( <========================================
-            address(this)
-        );
-    }
-```
-
-But in the case of a borrow the value is not coming from the cToken after the actual borrow as you can see in the snippet below
-
-```solidity
-function doBorrow(address token, uint256 amountCall)
-        internal
-        returns (uint256 borrowAmount)
-    {
-        Bank storage bank = banks[token]; // assume the input is already sanity checked.
-
-        IERC20Upgradeable uToken = IERC20Upgradeable(token);
-        uint256 uBalanceBefore = uToken.balanceOf(address(this));
-        if (ICErc20(bank.cToken).borrow(amountCall) != 0)
-            revert BORROW_FAILED(amountCall);
-        uint256 uBalanceAfter = uToken.balanceOf(address(this));
-
-        borrowAmount = uBalanceAfter - uBalanceBefore;
-        bank.totalDebt += amountCall; <====================================================
-    }
-```
-
-This can be an issue in two cases:
-
-1. The amount actually borrowed is less than amountCall, then the totalDebt will be recorded as bigger that what it actually is until the next accrual happens. In one case, the position might end up liquidatable and the operation execution will revert because of https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L607.
-or it can be not reverting and recording the wrong debt temporarily
-
-2. The amount actually borrowed is bigger than amountCall (for instance because some fees might be accounted in the interests when entering the loan) and in that case the amount recorded into totalDebt might be less than what it is supposed to be until the next operation.
-
-## Impact
-
-All view functions exposing the debt and the risk will not be accurate.
-
-## Code Snippet
-
-https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L868
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-When borrowing, use the actual debt as seen by the cToken.
-
-```solidity
-function doBorrow(address token, uint256 amountCall)
-        internal
-        returns (uint256 borrowAmount)
-    {
-        Bank storage bank = banks[token]; // assume the input is already sanity checked.
-
-        IERC20Upgradeable uToken = IERC20Upgradeable(token);
-        uint256 uBalanceBefore = uToken.balanceOf(address(this));
-        if (ICErc20(bank.cToken).borrow(amountCall) != 0)
-            revert BORROW_FAILED(amountCall);
-        uint256 uBalanceAfter = uToken.balanceOf(address(this));
-
-        borrowAmount = uBalanceAfter - uBalanceBefore;
-        uint256 newDebt = ICErc20(bank.cToken).borrowBalanceStored(
-            address(this)
-        );
-        bank.totalDebt += newDebt;
-    }
-```
-
-# Issue M-7: `BlueBerryBank.withdrawLend` function cannot be paused 
+# Issue M-5: `BlueBerryBank.withdrawLend` function cannot be paused 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/204 
 
@@ -1634,12 +1150,12 @@ Manual Review
 ## Recommendation
 A function, which is similar to the `BlueBerryBank.isBorrowAllowed`, `BlueBerryBank.isRepayAllowed`, and `BlueBerryBank.isLendAllowed` functions, can be added in the `BlueBerryBank` contract for pausing the `BlueBerryBank.withdrawLend` function. This function can then be used in the `BlueBerryBank.withdrawLend` function so the `BlueBerryBank.withdrawLend` function can be paused when needed.
 
-# Issue M-8: If a token's oracle goes down or price falls to zero, liquidations will be frozen 
+# Issue M-6: If a token's oracle goes down or price falls to zero, liquidations will be frozen 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/161 
 
 ## Found by 
-Saeedalipoor01988, 8olidity, obront, sakshamguruji, 0xChinedu
+8olidity, 0xChinedu, rvierdiiev, obront, sakshamguruji, Saeedalipoor01988
 
 ## Summary
 
@@ -1684,57 +1200,12 @@ Manual Review
 
 Ensure there is a safeguard in place to protect against this possibility. 
 
-# Issue M-9: Incorrect handling of token approvals 
-
-Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/159 
-
-## Found by 
-8olidity, Bauer, carrot, shark, Breeje
-
-## Summary
-The `BlueBerryBank` contract approves token spending. However, it never resets token approvals 0. This can cause issues with tokens like CRV, where you cannot set approvals from a non-zero value to another non-zero value.
-## Vulnerability Detail
-Approvals are generally handled in two ways. In the normal Openzeppelin pattern, approve function sets the allowance to the value passed. However in other tokens, like USDT, there is a built-in race condition prevention mechanism where approvals must be reset to 0 before setting it to some non-zero value. This is also true for the case of the CRV token, as can be seen from its vyper contract
-```vyper
-def approve(_spender : address, _value : uint256) -> bool:
-    """
-    @notice Approve `_spender` to transfer `_value` tokens on behalf of `msg.sender`
-    @dev Approval may only be from zero -> nonzero or from nonzero -> zero in order
-        to mitigate the potential race condition described here:
-        https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
-    @param _spender The address which will spend the funds
-    @param _value The amount of tokens to be spent
-    @return bool success
-    """
-    assert _value == 0 or self.allowances[msg.sender][_spender] == 0
-    self.allowances[msg.sender][_spender] = _value
-    log Approval(msg.sender, _spender, _value)
-    return True
-```
-
-Since the protocol is intent on using CRV, it must use precaution with the approval mechanism and have the bank reset the approval to 0, after every instance of it granting approval. Otherwise, it can permanently brick the contract if even 1 wei of approval is remaining after calling the transfer functions, as it will revert on subsequent approval calls. Since the bank sometimes depends on external contracts to move out tokens (lending protocol, spells), the current approval pattern is very risky.
-
-## Impact
-Bricked bank for CRV tokens due to incorrect approval handling
-## Code Snippet
-https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L646-L657
-https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L882-L884
-## Tool used
-
-Manual Review
-
-## Recommendation
-Explicitly reset approval to 0 after setting it at the end of the functions
-```solidity
-IERC20Upgradeable(token).approve(bank.cToken, 0);
-```
-
-# Issue M-10: totalLend isn't updated on liquidation, leading to permanently inflated value 
+# Issue M-7: totalLend isn't updated on liquidation, leading to permanently inflated value 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/155 
 
 ## Found by 
-SPYBOY, cducrest-brainbot, berndartmueller, obront
+berndartmueller, obront, SPYBOY, cducrest-brainbot
 
 ## Summary
 
@@ -1819,12 +1290,12 @@ For the best accuracy, updating `bank.totalLend` should happen from the `withdra
 
 Alternatively, you could add an update to `bank.totalLend` in the `liquidate()` function, which might temporarily underrepresent the total lent before the liquidator withdrew the funds, but would end up being accurate over the long run.
 
-# Issue M-11: Complete debt size is not paid off for fee on transfer tokens, but users aren't warned 
+# Issue M-8: Complete debt size is not paid off for fee on transfer tokens, but users aren't warned 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/153 
 
 ## Found by 
-chaduke, tsvetanovv, obront, rvierdiiev, Avci, Breeje, berndartmueller
+tsvetanovv, rvierdiiev, Avci, obront, chaduke, berndartmueller, Breeje
 
 ## Summary
 
@@ -1881,59 +1352,57 @@ The issue here is that the failure is silent, so that users request to pay off t
 
 To solve this, there should be a confirmation that any user who passes `type(uint256).max` has paid off their debt in full. Otherwise, the function should revert, so that users paying fee on transfer tokens know that they cannot use the "pay in full" feature and must specify the correct amount to get their outstanding balance down to zero.
 
-# Issue M-12: If any incorrect parameters are added to a new bank, token will be permanently locked out of the protocol 
+# Issue M-9: LP tokens cannot be valued because ICHI cannot be priced by oracle, causing all new open positions to revert 
 
-Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/149 
+Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/152 
 
 ## Found by 
-GimelSec, obront
+obront
 
 ## Summary
 
-When new tokens are added to the protocol with the `addBank()` function, there aren't adequate checks on the parameters. These tokens are permanently added, many values are unchangeable, and the tokens added cannot be added again. The result is that any incorrect parameters will permanently lock these tokens from the platform.
+In order to value ICHI LP tokens, the oracle uses the Fair LP Pricing technique, which uses the prices of both individual tokens, along with the quantities, to calculate the LP token value. However, this process requires the underlying token prices to be accessible by the oracle. Both Chainlink and Band do not support the ICHI token, so the function will fail, causing all new positions using the IchiVaultSpell to revert.
 
 ## Vulnerability Detail
 
-When the admins add a new token to the protocol, they call the `addBank()` function:
+When a new Ichi position is opened, the ICHI LP tokens are posted as collateral. Their value is assessed using the `IchiLpOracle#getPrice()` function:
 
 ```solidity
-function addBank(
-    address token,
-    address cToken,
-    address softVault,
-    address hardVault
-    // @ok if oracle could stop supporting a token, it could still be added? - wont be accepted, admin error
-) external onlyOwner onlyWhitelistedToken(token) {
-    if (
-        token == address(0) ||
-        cToken == address(0) ||
-        softVault == address(0) ||
-        hardVault == address(0)
-    ) revert ZERO_ADDRESS();
+function getPrice(address token) external view override returns (uint256) {
+    IICHIVault vault = IICHIVault(token);
+    uint256 totalSupply = vault.totalSupply();
+    if (totalSupply == 0) return 0;
+
+    address token0 = vault.token0();
+    address token1 = vault.token1();
+
+    (uint256 r0, uint256 r1) = vault.getTotalAmounts();
+    uint256 px0 = base.getPrice(address(token0));
+    uint256 px1 = base.getPrice(address(token1));
+    uint256 t0Decimal = IERC20Metadata(token0).decimals();
+    uint256 t1Decimal = IERC20Metadata(token1).decimals();
+
+    uint256 totalReserve = (r0 * px0) /
+        10**t0Decimal +
+        (r1 * px1) /
+        10**t1Decimal;
+
+    return (totalReserve * 1e18) / totalSupply;
+}
 ```
-The function takes in the token address, cToken address, soft and hard vaults. The only logic check on these parameters is that they are not `address(0)`.
+This function uses the "Fair LP Pricing" formula, made famous by Alpha Homora. To simplify, this uses an oracle to get the prices of both underlying tokens, and then calculates the LP price based on these values and the reserves.
 
-However, once these assets are set, the `token` and `cToken` are no longer allowed to be attached to a new bank.
+However, this process requires that we have a functioning oracle for the underlying tokens. However, [Chainlink](https://data.chain.link/) and [Band](https://data.bandprotocol.com/) both do not support the ICHI token (see the links for their comprehensive lists of data feeds). As a result, the call to `base.getPrice(token0)` will fail.
 
-```solidity
-if (cTokenInBank[cToken]) revert CTOKEN_ALREADY_ADDED();
-if (bank.isListed) revert BANK_ALREADY_LISTED();
-```
-Similarly, the hard and soft vaults cannot be changed once they are set.
-
-The result is that, if a token is added with an incorrect cToken, incorrect soft vault, or incorrect hard vault, these parameters cannot be changed, and the token cannot be edited, deleted or replaced, permanently blocking it from being used on the platform.
-
-The same issue exists if, for any reason, the address of a cToken changed, or a token upgrades to a new address but uses the same cToken address, or any other changes occur that require these values to be shifted.
-
-Note: I am aware that admin error is usually precluded from Sherlock contests, but this is not a "setup" task. It is an ongoing risk that could come from unlikely external events or from a small admin error, where any issue is unfixable and would cause major lasting damage. It is important that this possibility does not exist to ensure the protocol can function properly.
+All prices are calculated in the `isLiquidatable()` check at the end of the `execute()` function. As a result, any attempt to open a new ICHI position and post the LP tokens as collateral (which happens in both `openPosition()` and `openPositionFarm()`) will revert.
 
 ## Impact
 
-Important tokens could be locked from being allowed as an underlying or debt asset on the Blueberry protocol.
+All new positions opened using the `IchiVaultSpell`  will revert when they attempt to look up the LP token price, rendering the protocol useless.
 
 ## Code Snippet
 
-https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L190-L217
+https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/oracle/IchiLpOracle.sol#L19-L39
 
 ## Tool used
 
@@ -1941,9 +1410,65 @@ Manual Review
 
 ## Recommendation
 
-Add a function for admins to update existing banks, changing the cToken, softVault or hardVault to ensure these markets are able to stay live and active.
+There will need to be an alternate form of oracle that can price the ICHI token. The best way to accomplish this is likely to use a TWAP of the price on an AMM.
 
-# Issue M-13: HardVault never deposits assets to Compound 
+## Discussion
+
+**Gornutz**
+
+There is additional oracles for assets not supported by chainlink or band but just not in scope of this specific audit.
+
+**hrishibhat**
+
+Based on the context there are no implementations for getting the price of the ICHI token. Considering this a valid issue. 
+
+
+**SergeKireev**
+
+Escalate for 31 USDC
+
+Impact stated is medium, since positions cannot be opened and no funds are at risk.
+The high severity definition as stated per Sherlock docs:
+
+>This vulnerability would result in a material loss of funds and the cost of the attack is low (relative to the amount of funds lost). The attack path is possible with reasonable assumptions that mimic on-chain conditions. The vulnerability must be something that is not considered an acceptable risk by a reasonable protocol team.
+
+**sherlock-admin**
+
+ > Escalate for 31 USDC
+> 
+> Impact stated is medium, since positions cannot be opened and no funds are at risk.
+> The high severity definition as stated per Sherlock docs:
+> 
+> >This vulnerability would result in a material loss of funds and the cost of the attack is low (relative to the amount of funds lost). The attack path is possible with reasonable assumptions that mimic on-chain conditions. The vulnerability must be something that is not considered an acceptable risk by a reasonable protocol team.
+
+You've created a valid escalation for 31 USDC!
+
+To remove the escalation from consideration: Delete your comment.
+To change the amount you've staked on this escalation: Edit your comment **(do not create a new comment)**.
+
+You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
+
+**hrishibhat**
+
+Escalation accepted
+
+This is a valid medium
+Also Given that this is an issue only for the Ichi tokens and impact is only unable to open positions.
+
+**sherlock-admin**
+
+> Escalation accepted
+> 
+> This is a valid medium
+> Also Given that this is an issue only for the Ichi tokens and impact is only unable to open positions.
+
+This issue's escalations have been accepted!
+
+Contestants' payouts and scores will be updated according to the changes made on this issue.
+
+
+
+# Issue M-10: HardVault never deposits assets to Compound 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/147 
 
@@ -1991,154 +1516,12 @@ Manual Review
 
 Either add the functionality to the Hard Vault to have the assets pulled from the ERC1155 and deposited to the Compound fork, or change the comments and docs to be clear that such underlying assets will not be receiving any yield.
 
-# Issue M-14: position owner can execute spell on position even if risk level has passed the liquidatable threshold. 
-
-Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/133 
-
-## Found by 
-koxuan
-
-## Summary
-When executing spell, position will be checked to ensure that it is not in the liquidatable status. However, due to the design of the protocol to cache the `totalDebt` instead of querying compound forked protocol for the `totalDebt` everytime, cached `totalDebt` will not have the accrued interest from the point `execute` is called to the last `accrue` being called. User position might have entered liquidatable threshold but the cached `totalDebt` is not the latest and hence user can execute spell on position. 
-
-## Vulnerability Detail
-
-When user execute a spell on an existing position, a `isLiquiditable` check is run to make sure that user position has sufficient collateral.
-
-```solidity
-    function execute(
-        uint256 positionId,
-        address spell,
-        bytes memory data
-    ) external payable lock onlyEOAEx returns (uint256) {
-        if (!whitelistedSpells[spell]) revert SPELL_NOT_WHITELISTED(spell);
-        if (positionId == 0) {
-            positionId = nextPositionId++;
-            positions[positionId].owner = msg.sender;
-        } else {
-            if (positionId >= nextPositionId) revert BAD_POSITION(positionId);
-            if (msg.sender != positions[positionId].owner)
-                revert NOT_FROM_OWNER(positionId, msg.sender);
-        }
-        POSITION_ID = positionId;
-        SPELL = spell;
-
-
-        (bool ok, bytes memory returndata) = SPELL.call{value: msg.value}(data);
-        if (!ok) {
-            if (returndata.length > 0) {
-                assembly {
-                    let returndata_size := mload(returndata)
-                    revert(add(32, returndata), returndata_size)
-                }
-            } else {
-                revert("bad cast call");
-            }
-        }
-
-
-        if (isLiquidatable(positionId)) revert INSUFFICIENT_COLLATERAL();
-
-
-        POSITION_ID = _NO_ID;
-        SPELL = _NO_ADDRESS;
-
-
-        return positionId;
-    }
-```
-
-In `isLiquidatable`, position risk is used to determine if position has entered liquidatable status.
-```solidity
-    function isLiquidatable(uint256 positionId)
-        public
-        view
-        returns (bool liquidatable)
-    {
-        Position storage pos = positions[positionId];
-        uint256 risk = getPositionRisk(positionId);
-        liquidatable = risk >= oracle.getLiqThreshold(pos.underlyingToken);
-    }
-```
-
-```solidity
-    function getPositionRisk(uint256 positionId)
-        public
-        view
-        returns (uint256 risk)
-    {
-        Position storage pos = positions[positionId];
-        uint256 pv = getPositionValue(positionId);
-        uint256 ov = getDebtValue(positionId);
-        uint256 cv = oracle.getUnderlyingValue(
-            pos.underlyingToken,
-            pos.underlyingAmount
-        );
-
-
-        if (cv == 0) risk = 0;
-        else if (pv >= ov) risk = 0;
-        else {
-            risk = ((ov - pv) * DENOMINATOR) / cv;
-        }
-    }
-```
-`getDebtValue` in `getPositionRisk` is part of the formula to calculate the risk. Look at `  uint256 debt = (share*bank.totalDebt).divCeil(bank.totalShare);` Notice that `bank.totalDebt`, the cached totalDebt of the bank is used to calculate position debt. 
- 
-```solidity
-    function getDebtValue(uint256 positionId)
-        public
-        view
-        override
-        returns (uint256)
-    {
-        uint256 value = 0;
-        Position storage pos = positions[positionId];
-        uint256 bitMap = pos.debtMap;
-        uint256 idx = 0;
-        while (bitMap > 0) {
-            if ((bitMap & 1) != 0) {
-                address token = allBanks[idx];
-                uint256 share = pos.debtShareOf[token];
-                Bank storage bank = banks[token];
-                uint256 debt = (share * bank.totalDebt).divCeil(
-                    bank.totalShare
-                );
-                value += oracle.getDebtValue(token, debt);
-            }
-            idx++;
-            bitMap >>= 1;
-        }
-        return value;
-    }
-```
-
-If `accrue` is not called for a very long time due to inactivity for the token which means `poke` and `accrue` not being called, position debt will be lesser than the actual amount and thus owner can execute spell even if the current debt has passed the liquidatable threshold due to stale `totalDebt`.
-
-Note:  Other than `totalDebtValue`, upstream contracts that call view only functions like `getBankInfo`, `borrowBalanceStored` and `getPositionDebts` will get a lesser debt amount. If there are frontends or external contracts that rely on these functions, returning a stale value will cause upstream interfaces that rely on it to not work correctly. 
-   
-## Impact
-Position owner can execute spell on position even if risk level has passed the liquidatable threshold. 
-
-## Code Snippet
-[BlueBerryBank.sol#L578-L613](https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L578-L613)
-[BlueBerryBank.sol#L497-L505](https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L497-L505)
-[BlueBerryBank.sol#L477-L495](https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L477-L495)
-[BlueBerryBank.sol#L451-L475](https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L451-L475)
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-Recommend calling compound forked protocol directly for the `totalDebt` if  view only is needed for `getDebtValue` because compound protocol `borrowBalanceCurrent` is a view function unlike  `poke` and `accrue`.
-
-# Issue M-15: Withdrawals from IchiVaultSpell have no slippage protection so can be frontrun, stealing all user funds 
+# Issue M-11: Withdrawals from IchiVaultSpell have no slippage protection so can be frontrun, stealing all user funds 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/130 
 
 ## Found by 
-obront, 0x52, tives, koxuan, cergyk, rvierdiiev, ctf\_sec, berndartmueller
+rvierdiiev, obront, koxuan, ctf\_sec, tives, cergyk, berndartmueller, 0x52
 
 ## Summary
 
@@ -2236,178 +1619,12 @@ Have the user input a slippage parameter to ensure that the amount of borrowed t
 
 Alternatively, use the existing oracle system to estimate a fair price and use that value in the `swap()` call.
 
-# Issue M-16: Users lose part of `ICHI` rewards when they attempt to 'take' partial collateral by calling `closePositionFarm` 
-
-Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/110 
-
-## Found by 
-0Kage
-
-## Summary
-Users can 'take' collateral by passing `lpTakeAmt` in `closePositionFarm`. `lpTakeAmt` in this case refers to wrapped farm tokens minted by `wIchiFarm` address. After taking back collateral from the bank, `wIchiFarm` calls the `burn()` function to harvest rewards and transfer them back to position owner.
-
-`harvest` function of `ichiFarm` transfers the entire pending ITCHI rewards to the sender (which in this case is `wIchiFarm` address), regardless of the burn amount requested.
-
-Of this, only proportionate amount of rewards are transfered back to the `ichiVaultSpell` - proportion here is determined by the `lpTakeAmt`. Balance tokens that rightfully belong to the position owner remain forvever trapped inside the `ichiVaultSpell` contract.
-
-## Vulnerability Detail
-On sending a request to take partial collateral, `closePositionFarm` function calls the [`burn` function on `wIchiFarm`](https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/wrapper/WIchiFarm.sol#L128). `burn()` calls the `harvest` function to collect all rewards from `wIchiFarm`.
-
-On checking codebase of [ichiFarm V2](https://github.com/ichifarm/ichi-farming/blob/main/contracts/ichiFarmV2.sol#L252), we notice that `harvest` function transfers all rewards back to sender (which is `wIchiFarm`). Note that, even though we are burning partial tokens, `harvest` function returns rewards on the entire LP tokens present in farming contract.
-
-```solidity
-function harvest(uint256 pid, address to) external {
-    ...
-
-      uint256 _pendingIchi = accumulatedIchi.sub(user.rewardDebt).toUInt256();
-
-        // Effects
-        user.rewardDebt = accumulatedIchi;
-
-        // Interactions
-        if (_pendingIchi > 0) {
-            ICHI.safeTransfer(to, _pendingIchi);
-        }
-
-    ...
-
-}
-```
-Now, coming back to the [`burn()` function in `wIchiFarm`](https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/wrapper/WIchiFarm.sol#L142), notice that rewards only proportionate to burn amount are being transfered back to the `ichiVaultSpell` that will further transfer them to position owner.
-
-```solidity
-
- function burn(uint256 id, uint256 amount)
-        external
-        nonReentrant
-        returns (uint256)
-    {
-
-        ...
-
-        ichiFarm.harvest(pid, address(this));
-
-        ...
-
-         // Transfer Reward Tokens
-        (uint256 enIchiPerShare, , ) = ichiFarm.poolInfo(pid);
-        uint256 stIchi = (stIchiPerShare * amount).divCeil(1e18);
-        uint256 enIchi = (enIchiPerShare * amount) / 1e18;
-
-        if (enIchi > stIchi) {
-            ICHI.safeTransfer(msg.sender, enIchi - stIchi);
-        }
-        ...
-    }
-
-```
-So the balance rewards are stuck inside the spell contract & there is no way for users to get back the rewards on subsequent burning of farm tokens.
-
-
-## Impact
-Users taking partial collateral will lose part of their rewards permanently.
-
-POC
-
-- Alice is an existing borrower with following positions (1 ETH - underlying, 700 USDC borrowing, collateral: 400 ICHI farm tokens)
-
-- Alice requests to take back 100 ICHI farm tokens
-
-- 100 ICHI farm tokens are burnt - and say all 400 ICHI farm tokens have collected 30 ICHI reward tokens
-
-- `wIchiFarm` wrapper gets back all 30 ICHI rewards
-
-- Wrapper sends back only 7.5 ICHI rewards (25% of total rewards corresponding to 25% of ICHI farm tokens burnt) to `ichiVaultSpell`
-
-- `ichiVaultSpell` sends back 7.5 ICHI rewards to Alice
-
-- Alice loses balance 22.5 ICHI rewards which are permanently trapped inside the `wIchiFarm` wrapper
-
-## Code Snippet
-https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/wrapper/WIchiFarm.sol#L128
-
-## Tool used
-Manual Review
-
-## Recommendation
-Transfer back all rewards to `ichiVaultSpell` which inturn transfers them back to the owner.
-
-Inside the [`burn()` function](https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/wrapper/WIchiFarm.sol#L142), replace code block where rewards propotionate to `amount` are calculated....
-
-```solidity
-        (uint256 enIchiPerShare, , ) = ichiFarm.poolInfo(pid);
-        uint256 stIchi = (stIchiPerShare * amount).divCeil(1e18);
-        uint256 enIchi = (enIchiPerShare * amount) / 1e18;
-
-        if (enIchi > stIchi) {
-            ICHI.safeTransfer(msg.sender, enIchi - stIchi);
-        }
-```
-
-... with `ichiRewards` instead - this way all rewards upto that point are sent back to owner
-
-```solidity
-            ICHI.safeTransfer(msg.sender, ichiRewards); //**** - audit - ichiRewards are the entire pending rewards upto this point****
-```
-
-# Issue M-17: BlueBerryBank.getPositionRisk shows risk 0, when underlying price is 0 
-
-Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/104 
-
-## Found by 
-rvierdiiev
-
-## Summary
-BlueBerryBank.getPositionRisk shows risk 0, when underlying price is 0
-## Vulnerability Detail
-BlueBerryBank.getPositionRisk function is responsible for providing risk of position. Depending on this risk position can be liquidated.
-https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L477-L495
-```solidity
-    function getPositionRisk(uint256 positionId)
-        public
-        view
-        returns (uint256 risk)
-    {
-        Position storage pos = positions[positionId];
-        uint256 pv = getPositionValue(positionId);
-        uint256 ov = getDebtValue(positionId);
-        uint256 cv = oracle.getUnderlyingValue(
-            pos.underlyingToken,
-            pos.underlyingAmount
-        );
-
-
-        if (cv == 0) risk = 0;
-        else if (pv >= ov) risk = 0;
-        else {
-            risk = ((ov - pv) * DENOMINATOR) / cv;
-        }
-    }
-```
-
-The problem that in case if cv == 0, returned risk is 0.
-If cv == 0 that means that price of underlying token became 0 and that risk should be maximum.
-
-1.Suppose that user borrowed using some underlying token tokenA.
-2.Then smth happened with that token, so it costs nothing now.
-3.But position is not liquidatable as it will return risk 0 and is considered as healthy.
-## Impact
-Lost of borrowed funds for protocol.
-## Code Snippet
-https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L477-L495
-## Tool used
-
-Manual Review
-
-## Recommendation
-In case if underlying token price became 0 you need to return risk that is already liquidatable.
-
-# Issue M-18: Chainlink's latestRoundData  return stale or incorrect result 
+# Issue M-12: Chainlink's latestRoundData  return stale or incorrect result 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/94 
 
 ## Found by 
-SPYBOY, tsvetanovv, 8olidity, Nyx, HonorLt, obront, evan, 0x52, Aymen0909, hl\_, koxuan, Chinmay, peanuts, csanuragjain, WatchDogs, rbserver, Avci
+8olidity, tsvetanovv, WatchDogs, Nyx, Avci, obront, Aymen0909, SPYBOY, HonorLt, csanuragjain, koxuan, evan, rbserver, hl\_, peanuts, Chinmay
 
 ## Summary
 https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/oracle/ChainlinkAdapterOracle.sol#L76
@@ -2477,7 +1694,7 @@ function getPrice(address _token) external view override returns (uint256) {
     }
 ```
 
-# Issue M-19: BasicSpell.doCutRewardsFee uses depositFee instead of withdraw fee 
+# Issue M-13: BasicSpell.doCutRewardsFee uses depositFee instead of withdraw fee 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/82 
 
@@ -2520,55 +1737,7 @@ Manual Review
 ## Recommendation
 Take withdraw fee from rewards.
 
-# Issue M-20: A Whale can grieve specific type of borrowing token 
-
-Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/80 
-
-## Found by 
-mert\_eren
-
-## Summary
-A Whale can grieve specific type of borrowing token
-## Vulnerability Detail
-ichiVault token taken with amount of borrowed token in spell contract balance. And total IchiVault token value houldn't be exceed the strategies set value. However, a malicious user can transfer borrow token and cause a revert of other user's openPosition attempt even if their borrowToken amount not exceed the limit. 
-## Impact
-https://imgur.com/a/XH8NAr6
-This test work in ichiVaultSpell.ts
-As can seen in photo even if a normal user's openPosiiton attempt revert due to contract try to take much more vault token than the user's borrowAmount.
-## Code Snippet
-https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/spell/IchiVaultSpell.sol#L140-L146
-## Tool used
-
-Manual Review
-
-## Recommendation
-Try to deposit user's borrowAmount input instead of borrowToken.balanceOf(address(this)) 
-
-# Issue M-21: A whale can make grieving attack to strategies that use same vault by transfer vault token to spell. 
-
-Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/79 
-
-## Found by 
-mert\_eren
-
-## Summary
-A whale can make grieving attack to strategies that use same vault by transfer vault token to spell.   
-## Vulnerability Detail
-In ichiVaultSpell's depositInternal function it check total vault token in spell contract. If totalVaultToken*vaultPrice exceed strategies maxPosition size than reverts. So a whale can take large amount of vault token and transfer to the spell contract and can make a dos of openposition for strategies which use this specific vault.
-## Impact
-https://imgur.com/a/6C7Gagw
-This test work in ichiVaultSpellTest.ts
-As seen normal user can't openPosition and take EXCEED_MAX_POS warning even if it shouldn't.
-## Code Snippet
-https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/spell/IchiVaultSpell.sol#L153-L157
-## Tool used
-
-Manual Review
-
-## Recommendation
-Instead of using balanceOf function can be recorded within the contract.
-
-# Issue M-22: A borrower might drain the vault by calling borrow() repeatedly with small borrow amount each time. 
+# Issue M-14: A borrower might drain the vault by calling borrow() repeatedly with small borrow amount each time. 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/45 
 
@@ -2637,7 +1806,7 @@ Borrow should revert when ``newShare == 0``.
 
 ```
 
-# Issue M-23: onlyEOAEx modifier that ensures call is from EOA might not hold true in the future 
+# Issue M-15: onlyEOAEx modifier that ensures call is from EOA might not hold true in the future 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/21 
 
@@ -2691,191 +1860,214 @@ Recommend using OpenZepellin's `isContract` function (https://docs.openzeppelin.
 
 ```
 
-# Issue M-24: liquidate will revert if amountCall is more than debt which can lead to DOS 
+# Issue M-16: ChainlinkAdapterOracle will return the wrong price for asset if underlying aggregator hits minAnswer 
 
-Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/14 
+Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/18 
 
 ## Found by 
-stent, tsvetanovv, koxuan
+0x52
 
 ## Summary
-A user can liquidate a liquidatable position. However, a logic in the coding allows others to frontrun liquidate tx and DOS it. 
 
+Chainlink aggregators have a built in circuit breaker if the price of an asset goes outside of a predetermined price band. The result is that if an asset experiences a huge drop in value (i.e. LUNA crash) the price of the oracle will continue to return the minPrice instead of the actual price of the asset. This would allow user to continue borrowing with the asset but at the wrong price. This is exactly what happened to [Venus on BSC when LUNA imploded](https://rekt.news/venus-blizz-rekt/). 
 
 ## Vulnerability Detail
 
-Let's say a position has 1000 debt. A user sees that the position is liquidatable, and calls liquidate with the full amount of 1000 debtToken. 
-```solidity
-    function liquidate(
-        uint256 positionId,
-        address debtToken,
-        uint256 amountCall
-    ) external override lock poke(debtToken) {
-        if (amountCall == 0) revert ZERO_AMOUNT();
-        if (!isLiquidatable(positionId)) revert NOT_LIQUIDATABLE(positionId);
-        Position storage pos = positions[positionId];
-        Bank memory bank = banks[pos.underlyingToken];
-        if (pos.collToken == address(0)) revert BAD_COLLATERAL(positionId);
+ChainlinkAdapterOracle uses the [ChainlinkFeedRegistry](https://etherscan.io/address/0x47Fb2585D2C56Fe188D0E6ec628a38b74fCeeeDf) to obtain the price of the requested tokens.
 
-        uint256 oldShare = pos.debtShareOf[debtToken];
-        (uint256 amountPaid, uint256 share) = repayInternal(
-            positionId,
-            debtToken,
-            amountCall
+    function latestRoundData(
+      address base,
+      address quote
+    )
+      external
+      view
+      override
+      checkPairAccess()
+      returns (
+        uint80 roundId,
+        int256 answer,
+        uint256 startedAt,
+        uint256 updatedAt,
+        uint80 answeredInRound
+      )
+    {
+      uint16 currentPhaseId = s_currentPhaseId[base][quote];
+      //@audit this pulls the Aggregator for the requested pair
+      AggregatorV2V3Interface aggregator = _getFeed(base, quote);
+      require(address(aggregator) != address(0), "Feed not found");
+      (
+        roundId,
+        answer,
+        startedAt,
+        updatedAt,
+        answeredInRound
+      ) = aggregator.latestRoundData();
+      return _addPhaseIds(roundId, answer, startedAt, updatedAt, answeredInRound, currentPhaseId);
+    }
+
+ChainlinkFeedRegistry#latestRoundData pulls the associated aggregator and requests round data from it. ChainlinkAggregators have minPrice and maxPrice circuit breakers built into them. This means that if the price of the asset drops below the minPrice, the protocol will continue to value the token at minPrice instead of it's actual value. This will allow users to take out huge amounts of bad debt and bankrupt the protocol.
+
+Example:
+TokenA has a minPrice of $1. The price of TokenA drops to $0.10. The aggregator still returns $1 allowing the user to borrow against TokenA as if it is $1 which is 10x it's actual value.
+
+Note:
+Chainlink oracles are used a just one piece of the OracleAggregator system and it is assumed that using a combination of other oracles, a scenario like this can be avoided. However this is not the case because the other oracles also have their flaws that can still allow this to be exploited. As an example if the chainlink oracle is being used with a UniswapV3Oracle which uses a long TWAP then this will be exploitable when the TWAP is near the minPrice on the way down. In a scenario like that it wouldn't matter what the third oracle was because it would be bypassed with the two matching oracles prices. If secondary oracles like Band are used a malicious user could DDOS relayers to prevent update pricing. Once the price becomes stale the chainlink oracle would be the only oracle left and it's price would be used.
+
+## Impact
+
+In the event that an asset crashes (i.e. LUNA) the protocol can be manipulated to give out loans at an inflated price
+
+## Code Snippet
+
+https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/oracle/ChainlinkAdapterOracle.sol#L66-L84
+
+## Tool used
+
+Manual Review
+
+## Recommendation
+
+ChainlinkAdapterOracle should check the returned answer against the minPrice/maxPrice and revert if the answer is outside of the bounds:
+
+        (, int256 answer, , uint256 updatedAt, ) = registry.latestRoundData(
+            token,
+            USD
         );
+        
+    +   if (answer >= maxPrice or answer <= minPrice) revert();
+    
+    
 
-        uint256 liqSize = (pos.collateralSize * share) / oldShare;
-        uint256 uTokenSize = (pos.underlyingAmount * share) / oldShare;
-        uint256 uVaultShare = (pos.underlyingVaultShare * share) / oldShare;
+## Discussion
 
-        pos.collateralSize -= liqSize;
-        pos.underlyingAmount -= uTokenSize;
-        pos.underlyingVaultShare -= uVaultShare;
+**Gornutz**
 
-        // Transfer position (Wrapped LP Tokens) to liquidator
-        IERC1155Upgradeable(pos.collToken).safeTransferFrom(
-            address(this),
-            msg.sender,
-            pos.collId,
-            liqSize,
-            ""
-        );
-        // Transfer underlying collaterals(vault share tokens) to liquidator
+The aggregator is responding with answers from the multiple of oracle sources
+
+**IAm0x52**
+
+Escalate for 50 USDC
+
+This is not a dupe of #94
+
+```The aggregator is responding with answers from the multiple of oracle sources```
+
+This comment is true but in my submission I address this exact issue and why it's still an issue even if the aggregator has multiple sources:
+
+> Note:
+> Chainlink oracles are used a just one piece of the OracleAggregator system and it is assumed that using a combination of other oracles, a scenario like this can be avoided. However this is not the case because the other oracles also have their flaws that can still allow this to be exploited. As an example if the chainlink oracle is being used with a UniswapV3Oracle which uses a long TWAP then this will be exploitable when the TWAP is near the minPrice on the way down. In a scenario like that it wouldn't matter what the third oracle was because it would be bypassed with the two matching oracles prices. If secondary oracles like Band are used a malicious user could DDOS relayers to prevent update pricing. Once the price becomes stale the chainlink oracle would be the only oracle left and it's price would be used.```
+
+Even with the structure of aggregator there are still lots of scenarios where this could cause an issue. The chainlink oracle needs to revert at min/max answer because otherwise it risk returning the wrong price and causing the collateral to be overvalued leading to huge amounts of abuse.
+
+**sherlock-admin**
+
+ > Escalate for 50 USDC
+> 
+> This is not a dupe of #94
+> 
+> ```The aggregator is responding with answers from the multiple of oracle sources```
+> 
+> This comment is true but in my submission I address this exact issue and why it's still an issue even if the aggregator has multiple sources:
+> 
+> > Note:
+> > Chainlink oracles are used a just one piece of the OracleAggregator system and it is assumed that using a combination of other oracles, a scenario like this can be avoided. However this is not the case because the other oracles also have their flaws that can still allow this to be exploited. As an example if the chainlink oracle is being used with a UniswapV3Oracle which uses a long TWAP then this will be exploitable when the TWAP is near the minPrice on the way down. In a scenario like that it wouldn't matter what the third oracle was because it would be bypassed with the two matching oracles prices. If secondary oracles like Band are used a malicious user could DDOS relayers to prevent update pricing. Once the price becomes stale the chainlink oracle would be the only oracle left and it's price would be used.```
+> 
+> Even with the structure of aggregator there are still lots of scenarios where this could cause an issue. The chainlink oracle needs to revert at min/max answer because otherwise it risk returning the wrong price and causing the collateral to be overvalued leading to huge amounts of abuse.
+
+You've created a valid escalation for 50 USDC!
+
+To remove the escalation from consideration: Delete your comment.
+To change the amount you've staked on this escalation: Edit your comment **(do not create a new comment)**.
+
+You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
+
+**Gornutz**
+
+Given the multi-aggregator setup we will use, once price hits Chainlink's oracles will at their min value. The other oracles will respond with a price well below that min value and will have a large enough deviation to cause a revert. Since the assets will be pooling from Chainlink / Band / Twap. Think setting a min / max inside of the chainlink oracle directly will potentially cause additional attack vectors to be created.
+
+**hrishibhat**
+
+Escalation accepted
+
+Not a duplicate of #94 
+This issue is a valid medium
+Given the unlikely edge case of Chainlink hitting minimum value as a result of a serious price movement and resulting in undercollateralized borrowing. 
+
+**sherlock-admin**
+
+> Escalation accepted
+> 
+> This issue is a valid medium
+> Given the unlikely edge case of Chainlink hitting minimum value as a result of a serious price movement and resulting in undercollateralized borrowing. 
+
+This issue's escalations have been accepted!
+
+Contestants' payouts and scores will be updated according to the changes made on this issue.
+
+
+
+# Issue M-17: WIchiFarm will break after second deposit of LP 
+
+Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/15 
+
+## Found by 
+0x52
+
+## Summary
+
+WIchiFarm.sol makes the incorrect assumption that IchiVaultLP doesn't reduce allowance when using the transferFrom if allowance is set to type(uint256).max. Looking at a currently deployed [IchiVault](https://etherscan.io/token/0x683f081dbc729dbd34abac708fa0b390d49f1c39#code#L2281) this assumption is not true. On the second deposit for the LP token, the call will always revert at the safe approve call.
+
+## Vulnerability Detail
+
+[IchiVault](https://etherscan.io/token/0x683f081dbc729dbd34abac708fa0b390d49f1c39#code#L2281)
+
+      function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
+          _transfer(sender, recipient, amount);
+          _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+          return true;
+      }
+
+The above lines show the trasnferFrom call which reduces the allowance of the spender regardless of whether the spender is approved for type(uint256).max or not. 
+
         if (
-            address(ISoftVault(bank.softVault).uToken()) == pos.underlyingToken
-        ) {
-            IERC20Upgradeable(bank.softVault).safeTransfer(
-                msg.sender,
-                uVaultShare
-            );
-        } else {
-            IERC1155Upgradeable(bank.hardVault).safeTransferFrom(
+            IERC20Upgradeable(lpToken).allowance(
                 address(this),
-                msg.sender,
-                uint256(uint160(pos.underlyingToken)),
-                uVaultShare,
-                ""
+                address(ichiFarm)
+            ) != type(uint256).max
+        ) {
+            // We only need to do this once per pool, as LP token's allowance won't decrease if it's -1.
+            IERC20Upgradeable(lpToken).safeApprove(
+                address(ichiFarm),
+                type(uint256).max
             );
         }
 
-        emit Liquidate(
-            positionId,
-            msg.sender,
-            debtToken,
-            amountPaid,
-            share,
-            liqSize,
-            uTokenSize
+As a result after the first deposit the allowance will be less than type(uint256).max. When there is a second deposit, the reduced allowance will trigger a safeApprove call.
+
+    function safeApprove(
+        IERC20Upgradeable token,
+        address spender,
+        uint256 value
+    ) internal {
+        // safeApprove should only be called when setting an initial allowance,
+        // or when resetting it to zero. To increase and decrease it, use
+        // 'safeIncreaseAllowance' and 'safeDecreaseAllowance'
+        require(
+            (value == 0) || (token.allowance(address(this), spender) == 0),
+            "SafeERC20: approve from non-zero to non-zero allowance"
         );
+        _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
     }
 
-```
-A griefer sees the tx in the mempool. He decides to frontrun the tx by calling `liquidate` with 1 amountCall. Now  the debt would be 999. Now notice that in `repayInternal` that if `paid > oldDebt`, the tx will revert. User can keep frontrunning liquidator and preventing him from repaying the full amount. 
-
-```solidity
-    function repayInternal( 
-        uint256 positionId,
-        address token,
-        uint256 amountCall
-    ) internal returns (uint256, uint256) {
-        Bank storage bank = banks[token];
-        Position storage pos = positions[positionId];
-        uint256 totalShare = bank.totalShare;
-        uint256 totalDebt = bank.totalDebt;
-        uint256 oldShare = pos.debtShareOf[token];
-        uint256 oldDebt = (oldShare * totalDebt).divCeil(totalShare);
-        if (amountCall == type(uint256).max) {
-            amountCall = oldDebt;
-        }
-        amountCall = doERC20TransferIn(token, amountCall);
-        uint256 paid = doRepay(token, amountCall);
-        if (paid > oldDebt) revert REPAY_EXCEEDS_DEBT(paid, oldDebt); // prevent share overflow attack
-        uint256 lessShare = paid == oldDebt
-            ? oldShare
-            : (paid * totalShare) / totalDebt;
-        bank.totalShare = totalShare - lessShare;
-        uint256 newShare = oldShare - lessShare;
-        pos.debtShareOf[token] = newShare;
-        if (newShare == 0) {
-            pos.debtMap &= ~(1 << uint256(bank.index));
-        }
-        return (paid, lessShare);
-    }
-
-```
-
-```solidity
-    function doRepay(address token, uint256 amountCall)
-        internal
-        returns (uint256 repaidAmount)
-    {
-        Bank storage bank = banks[token]; // assume the input is already sanity checked.
-        IERC20Upgradeable(token).approve(bank.cToken, amountCall);
-        if (ICErc20(bank.cToken).repayBorrow(amountCall) != 0)
-            revert REPAY_FAILED(amountCall);
-        uint256 newDebt = ICErc20(bank.cToken).borrowBalanceStored(
-            address(this)
-        );
-        repaidAmount = bank.totalDebt - newDebt;
-        bank.totalDebt = newDebt;
-    }
-
-```
-
-## Impact
-Adversary can cause DOS to `liquidate` by preventing liquidator from calling `liquidate` with full amount. 
-
-## Code Snippet
-[BlueBerryBank.sol#L511-L572](https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L511-L572)
-[BlueBerryBank.sol#L760-L787](https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L760-L787)
-[BlueBerryBank.sol#L877-L890](https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L877-L890)
-
-
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-If amountCall is more than debt, it should be set to debt
-```solidity
-if (amountCall > oldDebt){
-  amountCall = oldDebt;
-}
-```
-
-# Issue M-25: BlueBerryBank#doCutDepositFee is problematic for ERC20 tokens that don't support zero transfers 
-
-Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/13 
-
-## Found by 
-0x52, peanuts, rvierdiiev
-
-## Summary
-
-BlueBerryBank#doCutDepositFee attempts to transfer funds even if there isn't a deposit fee. If the underlying ERC20 doens't support transfers with zero value then the call will always revert when the deposit fee is zero.
-
-## Vulnerability Detail
-
-    function doCutDepositFee(address token, uint256 amount)
-        internal
-        returns (uint256)
-    {
-        if (config.treasury() == address(0)) revert NO_TREASURY_SET();
-        uint256 fee = (amount * config.depositFee()) / DENOMINATOR;
-        IERC20Upgradeable(token).safeTransfer(config.treasury(), fee);
-        return amount - fee;
-    }
-
-BlueBerryBank#doCutDepositFee always calls safeTransfer even when the amount to send could be zero because there isn't any deposit fee. For ERC20 tokens that don't support zero value transfers, this will always revert which breaks support for them.
+safeApprove requires that either the input is zero or the current allowance is zero. Since neither is true the call will revert. The result of this is that WIchiFarm is effectively broken after the first deposit.
 
 ## Impact
 
-Having no deposit fee will break support for ERC20 tokens that don't support zero transfers
+WIchiFarm is broken and won't be able to process deposits after the first.
 
 ## Code Snippet
 
-https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/BlueBerryBank.sol#L892-L900
+https://github.com/sherlock-audit/2023-02-blueberry/blob/main/contracts/wrapper/WIchiFarm.sol#L38
 
 ## Tool used
 
@@ -2883,20 +2075,73 @@ Manual Review
 
 ## Recommendation
 
-Only transfer if the amount to transfer is not zero:
+Only approve is current allowance isn't enough for call. Optionally add zero approval before the approve. Realistically it's impossible to use the entire type(uint256).max, but to cover edge cases you may want to add it.
 
-    function doCutDepositFee(address token, uint256 amount)
-        internal
-        returns (uint256)
-    {
-        if (config.treasury() == address(0)) revert NO_TREASURY_SET();
-        uint256 fee = (amount * config.depositFee()) / DENOMINATOR;
-    -   IERC20Upgradeable(token).safeTransfer(config.treasury(), fee);
-    +   if (fee != 0) IERC20Upgradeable(token).safeTransfer(config.treasury(), fee);
-        return amount - fee;
-    }
+        if (
+            IERC20Upgradeable(lpToken).allowance(
+                address(this),
+                address(ichiFarm)
+    -       ) != type(uint256).max
+    +       ) < amount
+        ) {
 
-# Issue M-26: ChainlinkAdapterOracle use BTC/USD chainlink oracle to price WBTC which is problematic if WBTC depegs 
+    +       IERC20Upgradeable(lpToken).safeApprove(
+    +           address(ichiFarm),
+    +           0
+            );
+            // We only need to do this once per pool, as LP token's allowance won't decrease if it's -1.
+            IERC20Upgradeable(lpToken).safeApprove(
+                address(ichiFarm),
+                type(uint256).max
+            );
+        }
+
+## Discussion
+
+**SergeKireev**
+
+Escalate for 31 USDC
+
+The impact stated is medium, since it only prevents additional deposits and no funds are at risk.
+The high severity definition as stated per Sherlock docs:
+
+>This vulnerability would result in a material loss of funds and the cost of the attack is low (relative to the amount of funds lost). The attack path is possible with reasonable assumptions that mimic on-chain conditions. The vulnerability must be something that is not considered an acceptable risk by a reasonable protocol team.
+
+**sherlock-admin**
+
+ > Escalate for 31 USDC
+> 
+> The impact stated is medium, since it only prevents additional deposits and no funds are at risk.
+> The high severity definition as stated per Sherlock docs:
+> 
+> >This vulnerability would result in a material loss of funds and the cost of the attack is low (relative to the amount of funds lost). The attack path is possible with reasonable assumptions that mimic on-chain conditions. The vulnerability must be something that is not considered an acceptable risk by a reasonable protocol team.
+
+You've created a valid escalation for 31 USDC!
+
+To remove the escalation from consideration: Delete your comment.
+To change the amount you've staked on this escalation: Edit your comment **(do not create a new comment)**.
+
+You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
+
+**hrishibhat**
+
+Escalation accepted 
+
+As the impact is only preventing further deposits rendering the farm contract useless, without causing a loss of funds. 
+
+**sherlock-admin**
+
+> Escalation accepted 
+> 
+> As the impact is only preventing further deposits rendering the farm contract useless, without causing a loss of funds. 
+
+This issue's escalations have been accepted!
+
+Contestants' payouts and scores will be updated according to the changes made on this issue.
+
+
+
+# Issue M-18: ChainlinkAdapterOracle use BTC/USD chainlink oracle to price WBTC which is problematic if WBTC depegs 
 
 Source: https://github.com/sherlock-audit/2023-02-blueberry-judging/issues/9 
 
